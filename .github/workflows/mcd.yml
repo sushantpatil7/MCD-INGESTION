@@ -4,11 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     branches:
-      - main
+      - master
 
 env:
   AWS_REGION: us-east-1  # Change to your AWS region
   LAMBDA_FUNCTION_NAME: pr-sql-processor  # Change to your Lambda function name
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   check-merge-and-sql:
@@ -48,8 +49,6 @@ jobs:
           else
             echo "✅ Branch is mergeable"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Handle merge conflicts
         if: steps.check_mergeable.outputs.mergeable == 'false'
@@ -73,27 +72,27 @@ jobs:
           After resolving conflicts, this workflow will automatically re-run."
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Find new SQL files
         if: steps.check_mergeable.outputs.mergeable == 'true'
         id: find_sql
         run: |
-          # Get the list of changed files in the PR
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO_OWNER=${{ github.repository_owner }}
           REPO_NAME=${{ github.event.repository.name }}
-          
-          # Fetch PR files and filter for new SQL files in sql_data directory
+
           gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
-            --jq '.[] | select(.status == "added" and .filename | startswith("sql_data/")) | select(.filename | endswith(".sql")) | .filename' > sql_files.txt
-          
-          FILE_COUNT=$(wc -l < sql_files.txt)
+            --jq '.[] 
+                  | select(.status == "added")
+                  | select(.filename | startswith("sql_data/"))
+                  | select(.filename | endswith(".sql"))
+                  | .filename' > sql_files.txt
+
+          FILE_COUNT=$(grep -c . sql_files.txt || true)
           echo "sql_file_count=${FILE_COUNT}" >> $GITHUB_OUTPUT
-          
-          if [ $FILE_COUNT -gt 0 ]; then
-            echo "✅ Found $FILE_COUNT new SQL file(s)"
+
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "✅ Found $FILE_COUNT new SQL file(s):"
             cat sql_files.txt
           else
             echo "ℹ️ No new SQL files found"
@@ -140,35 +139,7 @@ jobs:
           
           cat sql_content.json
 
-      - name: Invoke AWS Lambda
-        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
-        id: invoke_lambda
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Send SQL to Lambda function
-        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
-        run: |
-          # Invoke the Lambda function with SQL file content
-          aws lambda invoke \
-            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-            --invocation-type RequestResponse \
-            --payload file://sql_content.json \
-            --region ${{ env.AWS_REGION }} \
-            lambda_response.json
-          
-          # Read and display the response
-          cat lambda_response.json
-          
-          # Check if Lambda execution was successful
-          if grep -q "FunctionError" lambda_response.json; then
-            echo "❌ Lambda execution failed"
-            exit 1
-          else
-            echo "✅ SQL content sent to Lambda successfully"
-          fi
 
       - name: Post success comment
         if: success() && steps.check_mergeable.outputs.mergeable == 'true'
@@ -191,8 +162,7 @@ jobs:
           fi
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Post failure comment
         if: failure() && steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
@@ -205,5 +175,3 @@ jobs:
           Please check the workflow logs for more details."
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
