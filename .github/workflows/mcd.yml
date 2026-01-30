@@ -78,25 +78,26 @@ jobs:
         if: steps.check_mergeable.outputs.mergeable == 'true'
         id: find_sql
         run: |
-          # Get the list of changed files in the PR
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO_OWNER=${{ github.repository_owner }}
           REPO_NAME=${{ github.event.repository.name }}
-          
-          # Fetch PR files and filter for new SQL files in sql_data directory
+
           gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
-            --jq '.[] | select(.status == "added" and .filename | startswith("sql/")) | select(.filename | endswith(".sql")) | .filename' > sql_files.txt
-          
-          FILE_COUNT=$(wc -l < sql_files.txt)
+            --jq '.[] 
+                  | select(.status == "added") 
+                  | select(.filename | startswith("sql/")) 
+                  | select(.filename | endswith(".sql")) 
+                  | .filename' > sql_files.txt
+
+          FILE_COUNT=$(grep -c . sql_files.txt || true)
           echo "sql_file_count=${FILE_COUNT}" >> $GITHUB_OUTPUT
-          
-          if [ $FILE_COUNT -gt 0 ]; then
-            echo "✅ Found $FILE_COUNT new SQL file(s)"
+
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "✅ Found $FILE_COUNT new SQL file(s):"
             cat sql_files.txt
           else
             echo "ℹ️ No new SQL files found"
           fi
-
       - name: Extract SQL content from files
         if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
         id: extract_sql
