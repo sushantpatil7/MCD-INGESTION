@@ -73,7 +73,6 @@ jobs:
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
 
-
       - name: Find new SQL files
         if: steps.check_mergeable.outputs.mergeable == 'true'
         id: find_sql
@@ -84,9 +83,9 @@ jobs:
 
           gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
             --jq '.[] 
-                  | select(.status == "added") 
-                  | select(.filename | startswith("sql/")) 
-                  | select(.filename | endswith(".sql")) 
+                  | select(.status == "added")
+                  | select(.filename | startswith("sql_data/"))
+                  | select(.filename | endswith(".sql"))
                   | .filename' > sql_files.txt
 
           FILE_COUNT=$(grep -c . sql_files.txt || true)
@@ -98,6 +97,7 @@ jobs:
           else
             echo "ℹ️ No new SQL files found"
           fi
+
       - name: Extract SQL content from files
         if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
         id: extract_sql
