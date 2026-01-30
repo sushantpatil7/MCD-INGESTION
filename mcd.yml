@@ -1,0 +1,209 @@
+name: PR SQL Processing Automation
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1  # Change to your AWS region
+  LAMBDA_FUNCTION_NAME: pr-sql-processor  # Change to your Lambda function name
+
+jobs:
+  check-merge-and-sql:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if branch is mergeable
+        id: check_mergeable
+        run: |
+          # Get PR information
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO_OWNER=${{ github.repository_owner }}
+          REPO_NAME=${{ github.event.repository.name }}
+          
+          # Check if mergeable using GitHub API
+          MERGEABLE=$(gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER \
+            --jq '.mergeable')
+          
+          echo "mergeable=${MERGEABLE}" >> $GITHUB_OUTPUT
+          
+          if [ "$MERGEABLE" = "false" ]; then
+            echo "❌ Branch has merge conflicts"
+          elif [ "$MERGEABLE" = "null" ]; then
+            echo "⏳ Merge status still being computed, retrying..."
+            sleep 5
+            MERGEABLE=$(gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER \
+              --jq '.mergeable')
+            echo "mergeable=${MERGEABLE}" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Branch is mergeable"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Handle merge conflicts
+        if: steps.check_mergeable.outputs.mergeable == 'false'
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          COMMENT="❌ *Merge Conflict Detected*
+
+          This PR has merge conflicts that must be resolved before it can be merged.
+          
+          Please resolve the conflicts locally:
+          \\\`bash
+          git fetch origin
+          git checkout ${{ github.event.pull_request.head.ref }}
+          git merge origin/main
+          # Resolve conflicts in your editor
+          git add .
+          git commit -m 'Resolve merge conflicts'
+          git push origin ${{ github.event.pull_request.head.ref }}
+          \\\`
+          
+          After resolving conflicts, this workflow will automatically re-run."
+          
+          gh pr comment $PR_NUMBER --body "$COMMENT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find new SQL files
+        if: steps.check_mergeable.outputs.mergeable == 'true'
+        id: find_sql
+        run: |
+          # Get the list of changed files in the PR
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO_OWNER=${{ github.repository_owner }}
+          REPO_NAME=${{ github.event.repository.name }}
+          
+          # Fetch PR files and filter for new SQL files in sql_data directory
+          gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
+            --jq '.[] | select(.status == "added" and .filename | startswith("sql_data/")) | select(.filename | endswith(".sql")) | .filename' > sql_files.txt
+          
+          FILE_COUNT=$(wc -l < sql_files.txt)
+          echo "sql_file_count=${FILE_COUNT}" >> $GITHUB_OUTPUT
+          
+          if [ $FILE_COUNT -gt 0 ]; then
+            echo "✅ Found $FILE_COUNT new SQL file(s)"
+            cat sql_files.txt
+          else
+            echo "ℹ️ No new SQL files found"
+          fi
+
+      - name: Extract SQL content from files
+        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        id: extract_sql
+        run: |
+          # Save all SQL file contents
+          > sql_content.json
+          echo "{" >> sql_content.json
+          echo '  "files": [' >> sql_content.json
+          
+          FIRST=true
+          while IFS= read -r file; do
+            if [ -z "$file" ]; then
+              continue
+            fi
+            
+            if [ "$FIRST" = true ]; then
+              FIRST=false
+            else
+              echo "," >> sql_content.json
+            fi
+            
+            # Read file content and properly escape it for JSON
+            CONTENT=$(cat "$file" | jq -Rs .)
+            
+            echo "    {" >> sql_content.json
+            echo "      \"filename\": \"$file\"," >> sql_content.json
+            echo "      \"content\": $CONTENT" >> sql_content.json
+            echo "    }" >> sql_content.json
+          done < sql_files.txt
+          
+          echo "," >> sql_content.json
+          echo "    {" >> sql_content.json
+          echo "      \"pr_number\": ${{ github.event.pull_request.number }}," >> sql_content.json
+          echo "      \"pr_title\": \"${{ github.event.pull_request.title }}\"," >> sql_content.json
+          echo "      \"pr_author\": \"${{ github.event.pull_request.user.login }}\"" >> sql_content.json
+          echo "    }" >> sql_content.json
+          echo "  ]" >> sql_content.json
+          echo "}" >> sql_content.json
+          
+          cat sql_content.json
+
+      - name: Invoke AWS Lambda
+        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        id: invoke_lambda
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Send SQL to Lambda function
+        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        run: |
+          # Invoke the Lambda function with SQL file content
+          aws lambda invoke \
+            --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --invocation-type RequestResponse \
+            --payload file://sql_content.json \
+            --region ${{ env.AWS_REGION }} \
+            lambda_response.json
+          
+          # Read and display the response
+          cat lambda_response.json
+          
+          # Check if Lambda execution was successful
+          if grep -q "FunctionError" lambda_response.json; then
+            echo "❌ Lambda execution failed"
+            exit 1
+          else
+            echo "✅ SQL content sent to Lambda successfully"
+          fi
+
+      - name: Post success comment
+        if: success() && steps.check_mergeable.outputs.mergeable == 'true'
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          
+          if [ "${{ steps.find_sql.outputs.sql_file_count }}" -gt 0 ]; then
+            COMMENT="✅ *PR Validation Complete*
+
+            - ✅ No merge conflicts
+            - ✅ Found ${{ steps.find_sql.outputs.sql_file_count }} new SQL file(s)
+            - ✅ SQL content sent to AWS Lambda for processing
+            
+            Lambda execution successful!"
+          else
+            COMMENT="✅ *PR Validation Complete*
+
+            - ✅ No merge conflicts
+            - ℹ️ No new SQL files found in this PR"
+          fi
+          
+          gh pr comment $PR_NUMBER --body "$COMMENT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post failure comment
+        if: failure() && steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          COMMENT="❌ *Lambda Execution Failed*
+
+          The workflow encountered an error while sending SQL content to Lambda.
+          
+          Please check the workflow logs for more details."
+          
+          gh pr comment $PR_NUMBER --body "$COMMENT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
