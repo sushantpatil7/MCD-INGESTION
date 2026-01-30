@@ -137,7 +137,6 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
       # --------------------------------------------------
       # 7. Invoke Lambda
       # --------------------------------------------------
@@ -146,14 +145,19 @@ jobs:
         run: |
           aws lambda invoke \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
+            --invocation-type RequestResponse \
+            --cli-binary-format raw-in-base64-out \
             --payload file://sql_content.json \
             lambda_response.json
 
+          echo "Lambda response:"
           cat lambda_response.json
 
           if grep -q "FunctionError" lambda_response.json; then
-            echo "Lambda execution failed"
+            echo "❌ Lambda execution failed"
             exit 1
+          else
+            echo "✅ Lambda executed successfully"
           fi
 
       # --------------------------------------------------
