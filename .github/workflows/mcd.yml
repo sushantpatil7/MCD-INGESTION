@@ -17,20 +17,19 @@ jobs:
     permissions:
       pull-requests: write
       contents: read
-      id-token: write   # REQUIRED for AWS OIDC
 
     steps:
-      # ---------------------------------------------------
-      # 1. Checkout repository
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 1. Checkout code
+      # --------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ---------------------------------------------------
+      # --------------------------------------------------
       # 2. Check if PR is mergeable
-      # ---------------------------------------------------
+      # --------------------------------------------------
       - name: Check if branch is mergeable
         id: check_mergeable
         run: |
@@ -45,7 +44,6 @@ jobs:
           if [ "$MERGEABLE" = "false" ]; then
             echo "❌ Branch has merge conflicts"
           elif [ "$MERGEABLE" = "null" ]; then
-            echo "⏳ Merge status pending, retrying..."
             sleep 5
             MERGEABLE=$(gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER --jq '.mergeable')
             echo "mergeable=${MERGEABLE}" >> $GITHUB_OUTPUT
@@ -53,9 +51,9 @@ jobs:
             echo "✅ Branch is mergeable"
           fi
 
-      # ---------------------------------------------------
-      # 3. Comment if merge conflict exists
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 3. Handle merge conflicts
+      # --------------------------------------------------
       - name: Handle merge conflicts
         if: steps.check_mergeable.outputs.mergeable == 'false'
         run: |
@@ -63,14 +61,13 @@ jobs:
 
           COMMENT="❌ *Merge Conflict Detected*
 
-          Please resolve merge conflicts locally and push the changes.
-          This workflow will automatically re-run."
+          Please resolve merge conflicts and push again."
 
           gh pr comment $PR_NUMBER --body "$COMMENT"
 
-      # ---------------------------------------------------
-      # 4. Find newly added SQL files in sql_data/
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 4. Find new SQL files
+      # --------------------------------------------------
       - name: Find new SQL files
         if: steps.check_mergeable.outputs.mergeable == 'true'
         id: find_sql
@@ -80,7 +77,7 @@ jobs:
           REPO_NAME=${{ github.event.repository.name }}
 
           gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
-            --jq '.[] 
+            --jq '.[]
                   | select(.status == "added")
                   | select(.filename | startswith("sql_data/"))
                   | select(.filename | endswith(".sql"))
@@ -90,16 +87,16 @@ jobs:
           echo "sql_file_count=${FILE_COUNT}" >> $GITHUB_OUTPUT
 
           if [ "$FILE_COUNT" -gt 0 ]; then
-            echo "✅ Found SQL files:"
+            echo "Found SQL files:"
             cat sql_files.txt
           else
-            echo "ℹ️ No SQL files found"
+            echo "No SQL files found"
           fi
 
-      # ---------------------------------------------------
-      # 5. Extract SQL content into JSON payload
-      # ---------------------------------------------------
-      - name: Extract SQL content from files
+      # --------------------------------------------------
+      # 5. Extract SQL content
+      # --------------------------------------------------
+      - name: Extract SQL content
         if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
         run: |
           echo '{' > sql_content.json
@@ -128,67 +125,55 @@ jobs:
           echo "  \"pr_author\": \"${{ github.event.pull_request.user.login }}\"" >> sql_content.json
           echo '}' >> sql_content.json
 
-          echo "📦 Payload:"
           cat sql_content.json
 
-      # ---------------------------------------------------
-      # 6. Configure AWS credentials (OIDC)
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 6. Configure AWS credentials (ACCESS KEYS)
+      # --------------------------------------------------
       - name: Configure AWS credentials
         if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ---------------------------------------------------
-      # 7. Invoke AWS Lambda with SQL payload
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 7. Invoke Lambda
+      # --------------------------------------------------
       - name: Invoke Lambda
         if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
         run: |
           aws lambda invoke \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
-            --invocation-type RequestResponse \
             --payload file://sql_content.json \
             lambda_response.json
 
-          echo "📄 Lambda response:"
           cat lambda_response.json
 
           if grep -q "FunctionError" lambda_response.json; then
-            echo "❌ Lambda execution failed"
+            echo "Lambda execution failed"
             exit 1
           fi
 
-          echo "✅ Lambda executed successfully"
-
-      # ---------------------------------------------------
-      # 8. Post success comment
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 8. Success comment
+      # --------------------------------------------------
       - name: Post success comment
         if: success() && steps.check_mergeable.outputs.mergeable == 'true'
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
 
-          if [ "${{ steps.find_sql.outputs.sql_file_count }}" -gt 0 ]; then
-            COMMENT="✅ *PR Validation Complete*
+          COMMENT="✅ *PR Validation Complete*
 
-            - No merge conflicts
-            - SQL validated and sent to Lambda
-            - Execution successful"
-          else
-            COMMENT="✅ *PR Validation Complete*
-
-            - No merge conflicts
-            - No SQL files found"
-          fi
+          - SQL files processed
+          - Lambda executed successfully"
 
           gh pr comment $PR_NUMBER --body "$COMMENT"
 
-      # ---------------------------------------------------
-      # 9. Post failure comment
-      # ---------------------------------------------------
+      # --------------------------------------------------
+      # 9. Failure comment
+      # --------------------------------------------------
       - name: Post failure comment
         if: failure() && steps.check_mergeable.outputs.mergeable == 'true'
         run: |
@@ -196,7 +181,6 @@ jobs:
 
           COMMENT="❌ *SQL Processing Failed*
 
-          Lambda execution failed.  
-          Please check GitHub Actions logs for details."
+          Please check GitHub Actions logs."
 
           gh pr comment $PR_NUMBER --body "$COMMENT"
