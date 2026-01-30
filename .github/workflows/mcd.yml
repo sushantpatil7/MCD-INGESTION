@@ -7,8 +7,8 @@ on:
       - master
 
 env:
-  AWS_REGION: us-east-1
-  LAMBDA_FUNCTION_NAME: pr-sql-processor
+  AWS_REGION: eu-north-1
+  LAMBDA_FUNCTION_NAME: new-lambda
   GH_TOKEN: ${{ github.token }}
 
 jobs:
