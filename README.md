@@ -1,2 +1,2 @@
 "# MCD-INGESTION" 
-6.;7pouplx,sdfsg
+now updated the readme 
