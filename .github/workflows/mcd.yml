@@ -9,6 +9,7 @@ on:
 env:
   AWS_REGION: us-east-1  # Change to your AWS region
   LAMBDA_FUNCTION_NAME: pr-sql-processor  # Change to your Lambda function name
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   check-merge-and-sql:
@@ -48,8 +49,6 @@ jobs:
           else
             echo "✅ Branch is mergeable"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Handle merge conflicts
         if: steps.check_mergeable.outputs.mergeable == 'false'
@@ -73,8 +72,7 @@ jobs:
           After resolving conflicts, this workflow will automatically re-run."
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Find new SQL files
         if: steps.check_mergeable.outputs.mergeable == 'true'
@@ -163,8 +161,7 @@ jobs:
           fi
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Post failure comment
         if: failure() && steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
@@ -177,5 +174,3 @@ jobs:
           Please check the workflow logs for more details."
           
           gh pr comment $PR_NUMBER --body "$COMMENT"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
