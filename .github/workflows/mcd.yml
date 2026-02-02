@@ -9,14 +9,14 @@ on:
 env:
   AWS_REGION: eu-north-1
   LAMBDA_FUNCTION_NAME: new-lambda
-  GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
 jobs:
   check-merge-and-sql:
     runs-on: ubuntu-latest
+
     permissions:
-      pull-requests: write
       contents: read
+      pull-requests: write
 
     steps:
       # --------------------------------------------------
@@ -28,48 +28,46 @@ jobs:
           fetch-depth: 0
 
       # --------------------------------------------------
-      # 2. Install GitHub CLI
+      # 2. Install GitHub CLI (already authenticated)
       # --------------------------------------------------
       - name: Install GitHub CLI
         run: |
           sudo apt update
-          sudo apt install gh -y
+          sudo apt install -y gh
           gh --version
 
       # --------------------------------------------------
-      # 3. Authenticate GH CLI using PAT
-      # --------------------------------------------------
-      - name: Authenticate GH CLI
-        run: |
-          echo "${GH_TOKEN}" | gh auth login --with-token
-
-      # --------------------------------------------------
-      # 4. Find new SQL files
+      # 3. Find newly added SQL files
       # --------------------------------------------------
       - name: Find new SQL files
         id: find_sql
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          REPO_OWNER=${{ github.repository_owner }}
-          REPO_NAME=${{ github.repository.name }}
+          OWNER=${{ github.repository_owner }}
+          REPO=${{ github.event.repository.name }}
 
-          # Get only newly added SQL files in sql_data folder
-          gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
-            --jq '.[] | select(.status=="added") | select(.filename|startswith("sql_data/")) | select(.filename|endswith(".sql")) | .filename' > sql_files.txt
+          gh api repos/$OWNER/$REPO/pulls/$PR_NUMBER/files \
+            --jq '.[] 
+                  | select(.status=="added")
+                  | select(.filename | startswith("sql_data/"))
+                  | select(.filename | endswith(".sql"))
+                  | .filename' > sql_files.txt
 
           FILE_COUNT=$(grep -c . sql_files.txt || true)
           echo "sql_file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
-          echo "Found SQL files:"
-          cat sql_files.txt || echo "No new SQL files"
+
+          echo "SQL files found:"
+          cat sql_files.txt || echo "None"
 
       # --------------------------------------------------
-      # 5. Extract SQL content into JSON
+      # 4. Create Lambda payload JSON
       # --------------------------------------------------
-      - name: Extract SQL content
+      - name: Create Lambda payload
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
           echo '{ "files": [' > sql_content.json
           FIRST=true
+
           while IFS= read -r file; do
             [ -z "$file" ] && continue
             [ "$FIRST" = false ] && echo ',' >> sql_content.json
@@ -77,11 +75,12 @@ jobs:
             CONTENT=$(jq -Rs . < "$file")
             echo "  {\"filename\": \"$file\", \"content\": $CONTENT}" >> sql_content.json
           done < sql_files.txt
+
           echo ']}' >> sql_content.json
           cat sql_content.json
 
       # --------------------------------------------------
-      # 6. Configure AWS credentials
+      # 5. Configure AWS credentials
       # --------------------------------------------------
       - name: Configure AWS credentials
         if: steps.find_sql.outputs.sql_file_count > 0
@@ -92,7 +91,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # --------------------------------------------------
-      # 7. Invoke Lambda
+      # 6. Invoke Lambda
       # --------------------------------------------------
       - name: Invoke Lambda
         if: steps.find_sql.outputs.sql_file_count > 0
@@ -103,6 +102,7 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload file://sql_content.json \
             lambda_response.json
+
           echo "Lambda response:"
           cat lambda_response.json
 
@@ -111,23 +111,22 @@ jobs:
             exit 1
           else
             echo "✅ Lambda executed successfully"
+          fi
 
       # --------------------------------------------------
-      # 8. PR success comment
+      # 7. PR success comment
       # --------------------------------------------------
       - name: PR success comment
         if: success() && steps.find_sql.outputs.sql_file_count > 0
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          COMMENT="✅ *PR Validation Complete*\n- SQL files processed\n- Lambda executed successfully"
-          gh pr comment $PR_NUMBER --body "$COMMENT"
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "✅ *PR Validation Complete*\n- SQL files processed\n- Lambda executed successfully"
 
       # --------------------------------------------------
-      # 9. PR failure comment
+      # 8. PR failure comment
       # --------------------------------------------------
       - name: PR failure comment
         if: failure() && steps.find_sql.outputs.sql_file_count > 0
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          COMMENT="❌ *SQL Processing Failed*\nPlease check GitHub Actions logs."
-          gh pr comment $PR_NUMBER --body "$COMMENT"
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "❌ *SQL Processing Failed*\nPlease check GitHub Actions logs."
