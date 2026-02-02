@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 0
 
       # --------------------------------------------------
-      # 2. Install GitHub CLI (already authenticated)
+      # 2. Install GitHub CLI
       # --------------------------------------------------
       - name: Install GitHub CLI
         run: |
@@ -37,27 +37,33 @@ jobs:
           gh --version
 
       # --------------------------------------------------
-      # 3. Find newly added SQL files
+      # 3. Find new SQL files (FIXED)
       # --------------------------------------------------
       - name: Find new SQL files
         id: find_sql
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          OWNER=${{ github.repository_owner }}
-          REPO=${{ github.event.repository.name }}
+          REPO_OWNER=${{ github.repository_owner }}
+          REPO_NAME=${{ github.event.repository.name }}
 
-          gh api repos/$OWNER/$REPO/pulls/$PR_NUMBER/files \
-            --jq '.[] 
-                  | select(.status=="added")
+          gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
+            --jq '.[]
+                  | select(.status == "added")
                   | select(.filename | startswith("sql_data/"))
                   | select(.filename | endswith(".sql"))
                   | .filename' > sql_files.txt
 
           FILE_COUNT=$(grep -c . sql_files.txt || true)
-          echo "sql_file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "sql_file_count=${FILE_COUNT}" >> $GITHUB_OUTPUT
 
-          echo "SQL files found:"
-          cat sql_files.txt || echo "None"
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "Found SQL files:"
+            cat sql_files.txt
+          else
+            echo "No SQL files found"
+          fi
 
       # --------------------------------------------------
       # 4. Create Lambda payload JSON
@@ -118,15 +124,22 @@ jobs:
       # --------------------------------------------------
       - name: PR success comment
         if: success() && steps.find_sql.outputs.sql_file_count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
-            --body "✅ *PR Validation Complete*\n- SQL files processed\n- Lambda executed successfully"
+            --body "✅ *PR Validation Complete*
+          - SQL files processed
+          - Lambda executed successfully"
 
       # --------------------------------------------------
       # 8. PR failure comment
       # --------------------------------------------------
       - name: PR failure comment
         if: failure() && steps.find_sql.outputs.sql_file_count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
-            --body "❌ *SQL Processing Failed*\nPlease check GitHub Actions logs."
+            --body "❌ *SQL Processing Failed*
+          Please check GitHub Actions logs."
