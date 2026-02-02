@@ -19,25 +19,20 @@ jobs:
       contents: read
 
     steps:
-      # --------------------------------------------------
-      # 1. Checkout code
-      # --------------------------------------------------
+      # 1. Checkout repo
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # --------------------------------------------------
       # 2. Install GitHub CLI
-      # --------------------------------------------------
       - name: Install GitHub CLI
         run: |
           sudo apt update
           sudo apt install gh -y
+          gh --version
 
-      # --------------------------------------------------
       # 3. Find new SQL files
-      # --------------------------------------------------
       - name: Find new SQL files
         id: find_sql
         run: |
@@ -50,9 +45,7 @@ jobs:
           echo "Found SQL files:"
           cat sql_files.txt || echo "No new SQL files"
 
-      # --------------------------------------------------
-      # 4. Extract SQL content into JSON
-      # --------------------------------------------------
+      # 4. Extract SQL content
       - name: Extract SQL content
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -66,11 +59,8 @@ jobs:
             echo "  {\"filename\": \"$file\", \"content\": $CONTENT}" >> sql_content.json
           done < sql_files.txt
           echo ']}' >> sql_content.json
-          cat sql_content.json
 
-      # --------------------------------------------------
       # 5. Configure AWS credentials
-      # --------------------------------------------------
       - name: Configure AWS credentials
         if: steps.find_sql.outputs.sql_file_count > 0
         uses: aws-actions/configure-aws-credentials@v4
@@ -79,9 +69,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # --------------------------------------------------
       # 6. Invoke Lambda
-      # --------------------------------------------------
       - name: Invoke Lambda
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -91,25 +79,12 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload file://sql_content.json \
             lambda_response.json
-          echo "Lambda response:"
           cat lambda_response.json
 
-      # --------------------------------------------------
       # 7. PR success comment
-      # --------------------------------------------------
       - name: PR success comment
         if: success() && steps.find_sql.outputs.sql_file_count > 0
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           COMMENT="✅ *PR Validation Complete*\n- SQL files processed\n- Lambda executed successfully"
-          gh pr comment $PR_NUMBER --body "$COMMENT"
-
-      # --------------------------------------------------
-      # 8. PR failure comment
-      # --------------------------------------------------
-      - name: PR failure comment
-        if: failure() && steps.find_sql.outputs.sql_file_count > 0
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          COMMENT="❌ *SQL Processing Failed*\nPlease check GitHub Actions logs."
           gh pr comment $PR_NUMBER --body "$COMMENT"
