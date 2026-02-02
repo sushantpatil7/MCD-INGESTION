@@ -4,134 +4,110 @@ import re
 import boto3
 from datetime import datetime, timedelta
 from botocore.exceptions import ClientError
-from collections import defaultdict
 
 # ================= CONFIG =================
-
 TABLE_NAME = "mcd_core.sal_deployments"
 MAX_MONTHS = int(os.getenv("MAX_SQL_AGE_MONTHS", "12"))
 
 EMAIL_TO = "MCD_SC_Cloud_Support_Team@us.mcd.com"
 EMAIL_FROM = "no-reply@mcd.com"
 
-DATE_REGEX = re.compile(r"\d{4}_\d{2}_\d{2}")
-VERSION_REGEX = re.compile(r"_v(\d+)\.sql$")
-
-# ================= AWS =================
-
+# =========================================
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(TABLE_NAME)
 ses = boto3.client("ses")
 
-# ================= HANDLER =================
+# STRICT filename rule: *_YYYY_MM_DD_vN.sql
+DATE_REGEX = re.compile(r"_(\d{4}_\d{2}_\d{2})_v\d+\.sql$")
 
+# ================= LAMBDA =================
 def lambda_handler(event, context):
     files = event.get("files", [])
     if not files:
-        return {"status": "NO FILES"}
+        return {"status": "NO_FILES"}
 
-    grouped = defaultdict(list)
+    grouped = {}
 
-    # ---- Group by SCT folder
     for f in files:
         path = f["filename"]
 
-        # Expected: sql_data/deployment/SCT-XXXX/file.sql
+        if not path.startswith("sql_data/deployment/"):
+            continue
+
         parts = path.split("/")
         if len(parts) < 4:
             continue
-        if parts[1] != "deployment":
-            continue
-        if not parts[2].startswith("SCT-"):
-            continue
 
         deployment_id = parts[2]
-        grouped[deployment_id].append(f)
+        grouped.setdefault(deployment_id, []).append(f)
 
-    # ---- Execute in deployment order
+    # Execute deployment folders in order
     for deployment_id in sorted(grouped.keys()):
-        scripts = sort_scripts(grouped[deployment_id])
+        print(f"\n=== Deployment {deployment_id} ===")
 
-        print(f"🚀 Starting deployment {deployment_id}")
+        scripts = sorted(grouped[deployment_id], key=lambda x: x["filename"])
 
         for script in scripts:
             status, _ = process_script(deployment_id, script)
+
+            # STOP execution on failure for THIS deployment
             if status == "FAILED":
-                print(f"❌ Deployment {deployment_id} stopped due to failure")
+                print(f"Stopping deployment {deployment_id} due to FAILURE")
                 break
 
     return {"status": "COMPLETED"}
 
-# ================= SORTING =================
-
-def sort_scripts(scripts):
-    def version_key(script):
-        name = script["filename"].split("/")[-1]
-        match = VERSION_REGEX.search(name)
-        return int(match.group(1)) if match else 9999
-
-    return sorted(scripts, key=version_key)
-
-# ================= PROCESS SCRIPT =================
-
+# ================= CORE LOGIC =================
 def process_script(deployment_id, script):
-    script_name = script["filename"].split("/")[-1]
     script_path = script["filename"]
+    script_name = script_path.split("/")[-1]
 
-    # ---- Validate date
-    date_match = DATE_REGEX.search(script_name)
-    if not date_match:
+    print(f"Processing: {script_name}")
+
+    # 1️⃣ Filename validation
+    match = DATE_REGEX.search(script_name)
+    if not match:
         return record_and_notify(
             deployment_id, script_name, script_path,
-            "IGNORED", "Filename does not contain date (YYYY_MM_DD)"
+            "IGNORED", "Filename does not follow *_YYYY_MM_DD_vN.sql format"
         )
 
-    # ---- Validate version
-    version_match = VERSION_REGEX.search(script_name)
-    if not version_match:
-        return record_and_notify(
-            deployment_id, script_name, script_path,
-            "IGNORED", "Filename does not contain version (_v1, _v2)"
-        )
-
-    # ---- Age check
-    script_date = datetime.strptime(date_match.group(), "%Y_%m_%d")
+    # 2️⃣ Date validation
+    script_date = datetime.strptime(match.group(1), "%Y_%m_%d")
     if script_date < datetime.utcnow() - timedelta(days=30 * MAX_MONTHS):
         return record_and_notify(
             deployment_id, script_name, script_path,
-            "IGNORED", "Older than allowed threshold"
+            "IGNORED", "SQL file older than allowed threshold"
         )
 
-    # ---- Already executed check
+    # 3️⃣ Already executed check
     try:
         existing = table.get_item(
             Key={"deployment_id": deployment_id, "script_name": script_name}
         )
         if "Item" in existing:
-            return record_and_notify(
-                deployment_id, script_name, script_path,
-                "IGNORED", "Already executed"
-            )
+            print(f"Already executed: {script_name}")
+            return "IGNORED", "Already executed"
     except ClientError as e:
         print(f"DynamoDB error: {e}")
 
-    # ---- Execute SQL
+    # 4️⃣ Execute SQL
     try:
         execute_sql(script["content"])
         record(deployment_id, script_name, script_path, "SUCCESS")
         return "SUCCESS", None
+
     except Exception as e:
-        record_and_notify(
+        return record_and_notify(
             deployment_id, script_name, script_path,
             "FAILED", str(e)
         )
-        return "FAILED", str(e)
 
 # ================= HELPERS =================
-
 def execute_sql(content):
+    # Replace with real execution logic
     if "INVALID" in content:
-        raise Exception("Simulated SQL failure")
+        raise Exception("SQL execution failed")
 
 def record(deployment_id, script_name, path, status, reason=None):
     item = {
@@ -169,4 +145,4 @@ Reason       : {reason}
             }
         )
     except Exception as e:
-        print(f"SES failed: {e}")
+        print(f"SES error: {e}")
