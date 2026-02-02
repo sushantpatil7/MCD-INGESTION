@@ -19,11 +19,25 @@ jobs:
       contents: read
 
     steps:
+      # --------------------------------------------------
+      # 0. Install GitHub CLI
+      # --------------------------------------------------
+      - name: Install GitHub CLI
+        run: |
+          sudo apt update
+          sudo apt install -y gh
+          
+      # --------------------------------------------------
+      # 1. Checkout code
+      # --------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # --------------------------------------------------
+      # 2. Find new SQL files
+      # --------------------------------------------------
       - name: Find new SQL files
         id: find_sql
         run: |
@@ -34,6 +48,9 @@ jobs:
           FILE_COUNT=$(wc -l < sql_files.txt || true)
           echo "sql_file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
 
+      # --------------------------------------------------
+      # 3. Extract SQL content
+      # --------------------------------------------------
       - name: Extract SQL content
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -48,6 +65,9 @@ jobs:
           done < sql_files.txt
           echo ']}' >> sql_content.json
 
+      # --------------------------------------------------
+      # 4. Configure AWS credentials
+      # --------------------------------------------------
       - name: Configure AWS credentials
         if: steps.find_sql.outputs.sql_file_count > 0
         uses: aws-actions/configure-aws-credentials@v4
@@ -56,6 +76,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # --------------------------------------------------
+      # 5. Invoke Lambda
+      # --------------------------------------------------
       - name: Invoke Lambda
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -67,6 +90,9 @@ jobs:
             lambda_response.json
           cat lambda_response.json
 
+      # --------------------------------------------------
+      # 6. PR success comment
+      # --------------------------------------------------
       - name: PR success comment
         if: success() && steps.find_sql.outputs.sql_file_count > 0
         run: |
