@@ -19,25 +19,33 @@ jobs:
       contents: read
 
     steps:
+      # --------------------------------------------------
       # 1. Checkout code
+      # --------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # --------------------------------------------------
       # 2. Install GitHub CLI
+      # --------------------------------------------------
       - name: Install GitHub CLI
         run: |
           sudo apt update
           sudo apt install gh -y
           gh --version
 
-      # 3. Authenticate GitHub CLI
-      - name: Authenticate GitHub CLI
+      # --------------------------------------------------
+      # 3. Authenticate GH CLI using PAT
+      # --------------------------------------------------
+      - name: Authenticate GH CLI
         run: |
-          echo "${{ secrets.GH_TOKEN }}" | gh auth login --with-token
+          echo "${GH_TOKEN}" | gh auth login --with-token
 
+      # --------------------------------------------------
       # 4. Find new SQL files
+      # --------------------------------------------------
       - name: Find new SQL files
         id: find_sql
         run: |
@@ -45,6 +53,7 @@ jobs:
           REPO_OWNER=${{ github.repository_owner }}
           REPO_NAME=${{ github.repository.name }}
 
+          # Get only newly added SQL files in sql_data folder
           gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
             --jq '.[] | select(.status=="added") | select(.filename|startswith("sql_data/")) | select(.filename|endswith(".sql")) | .filename' > sql_files.txt
 
@@ -53,7 +62,9 @@ jobs:
           echo "Found SQL files:"
           cat sql_files.txt || echo "No new SQL files"
 
+      # --------------------------------------------------
       # 5. Extract SQL content into JSON
+      # --------------------------------------------------
       - name: Extract SQL content
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -69,7 +80,9 @@ jobs:
           echo ']}' >> sql_content.json
           cat sql_content.json
 
+      # --------------------------------------------------
       # 6. Configure AWS credentials
+      # --------------------------------------------------
       - name: Configure AWS credentials
         if: steps.find_sql.outputs.sql_file_count > 0
         uses: aws-actions/configure-aws-credentials@v4
@@ -78,7 +91,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # --------------------------------------------------
       # 7. Invoke Lambda
+      # --------------------------------------------------
       - name: Invoke Lambda
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -88,7 +103,6 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload file://sql_content.json \
             lambda_response.json
-
           echo "Lambda response:"
           cat lambda_response.json
 
@@ -98,7 +112,9 @@ jobs:
           else
             echo "✅ Lambda executed successfully"
 
+      # --------------------------------------------------
       # 8. PR success comment
+      # --------------------------------------------------
       - name: PR success comment
         if: success() && steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -106,7 +122,9 @@ jobs:
           COMMENT="✅ *PR Validation Complete*\n- SQL files processed\n- Lambda executed successfully"
           gh pr comment $PR_NUMBER --body "$COMMENT"
 
+      # --------------------------------------------------
       # 9. PR failure comment
+      # --------------------------------------------------
       - name: PR failure comment
         if: failure() && steps.find_sql.outputs.sql_file_count > 0
         run: |
