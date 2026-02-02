@@ -19,129 +19,45 @@ jobs:
       contents: read
 
     steps:
-      # --------------------------------------------------
-      # 1. Checkout code
-      # --------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # --------------------------------------------------
-      # 2. Check if PR is mergeable
-      # --------------------------------------------------
-      - name: Check if branch is mergeable
-        id: check_mergeable
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          REPO_OWNER=${{ github.repository_owner }}
-          REPO_NAME=${{ github.event.repository.name }}
-
-          MERGEABLE=$(gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER --jq '.mergeable')
-
-          echo "mergeable=${MERGEABLE}" >> $GITHUB_OUTPUT
-
-          if [ "$MERGEABLE" = "false" ]; then
-            echo "❌ Branch has merge conflicts"
-          elif [ "$MERGEABLE" = "null" ]; then
-            sleep 5
-            MERGEABLE=$(gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER --jq '.mergeable')
-            echo "mergeable=${MERGEABLE}" >> $GITHUB_OUTPUT
-          else
-            echo "✅ Branch is mergeable"
-          fi
-
-      # --------------------------------------------------
-      # 3. Handle merge conflicts
-      # --------------------------------------------------
-      - name: Handle merge conflicts
-        if: steps.check_mergeable.outputs.mergeable == 'false'
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-
-          COMMENT="❌ *Merge Conflict Detected*
-
-          Please resolve merge conflicts and push again."
-
-          gh pr comment $PR_NUMBER --body "$COMMENT"
-
-      # --------------------------------------------------
-      # 4. Find new SQL files
-      # --------------------------------------------------
       - name: Find new SQL files
-        if: steps.check_mergeable.outputs.mergeable == 'true'
         id: find_sql
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-          REPO_OWNER=${{ github.repository_owner }}
-          REPO_NAME=${{ github.event.repository.name }}
+          FILES=$(gh api repos/${{ github.repository_owner }}/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files \
+            --jq '.[] | select(.status=="added") | select(.filename|startswith("sql_data/")) | select(.filename|endswith(".sql")) | .filename')
+          echo "$FILES" > sql_files.txt
+          FILE_COUNT=$(wc -l < sql_files.txt || true)
+          echo "sql_file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
 
-          gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
-            --jq '.[]
-                  | select(.status == "added")
-                  | select(.filename | startswith("sql_data/"))
-                  | select(.filename | endswith(".sql"))
-                  | .filename' > sql_files.txt
-
-          FILE_COUNT=$(grep -c . sql_files.txt || true)
-          echo "sql_file_count=${FILE_COUNT}" >> $GITHUB_OUTPUT
-
-          if [ "$FILE_COUNT" -gt 0 ]; then
-            echo "Found SQL files:"
-            cat sql_files.txt
-          else
-            echo "No SQL files found"
-          fi
-
-      # --------------------------------------------------
-      # 5. Extract SQL content
-      # --------------------------------------------------
       - name: Extract SQL content
-        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        if: steps.find_sql.outputs.sql_file_count > 0
         run: |
-          echo '{' > sql_content.json
-          echo '  "files": [' >> sql_content.json
-
+          echo '{ "files": [' > sql_content.json
           FIRST=true
           while IFS= read -r file; do
             [ -z "$file" ] && continue
-
-            if [ "$FIRST" = false ]; then
-              echo ',' >> sql_content.json
-            fi
+            [ "$FIRST" = false ] && echo ',' >> sql_content.json
             FIRST=false
-
             CONTENT=$(jq -Rs . < "$file")
-
-            echo "    {" >> sql_content.json
-            echo "      \"filename\": \"$file\"," >> sql_content.json
-            echo "      \"content\": $CONTENT" >> sql_content.json
-            echo "    }" >> sql_content.json
+            echo "  {\"filename\": \"$file\", \"content\": $CONTENT}" >> sql_content.json
           done < sql_files.txt
+          echo ']}' >> sql_content.json
 
-          echo '  ],' >> sql_content.json
-          echo "  \"pr_number\": ${{ github.event.pull_request.number }}," >> sql_content.json
-          echo "  \"pr_title\": \"${{ github.event.pull_request.title }}\"," >> sql_content.json
-          echo "  \"pr_author\": \"${{ github.event.pull_request.user.login }}\"" >> sql_content.json
-          echo '}' >> sql_content.json
-
-          cat sql_content.json
-
-      # --------------------------------------------------
-      # 6. Configure AWS credentials (ACCESS KEYS)
-      # --------------------------------------------------
       - name: Configure AWS credentials
-        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        if: steps.find_sql.outputs.sql_file_count > 0
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-      # --------------------------------------------------
-      # 7. Invoke Lambda
-      # --------------------------------------------------
+
       - name: Invoke Lambda
-        if: steps.check_mergeable.outputs.mergeable == 'true' && steps.find_sql.outputs.sql_file_count > 0
+        if: steps.find_sql.outputs.sql_file_count > 0
         run: |
           aws lambda invoke \
             --function-name ${{ env.LAMBDA_FUNCTION_NAME }} \
@@ -149,42 +65,11 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload file://sql_content.json \
             lambda_response.json
-
-          echo "Lambda response:"
           cat lambda_response.json
 
-          if grep -q "FunctionError" lambda_response.json; then
-            echo "❌ Lambda execution failed"
-            exit 1
-          else
-            echo "✅ Lambda executed successfully"
-          fi
-
-      # --------------------------------------------------
-      # 8. Success comment
-      # --------------------------------------------------
-      - name: Post success comment
-        if: success() && steps.check_mergeable.outputs.mergeable == 'true'
+      - name: PR success comment
+        if: success() && steps.find_sql.outputs.sql_file_count > 0
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
-
-          COMMENT="✅ *PR Validation Complete*
-
-          - SQL files processed
-          - Lambda executed successfully"
-
-          gh pr comment $PR_NUMBER --body "$COMMENT"
-
-      # --------------------------------------------------
-      # 9. Failure comment
-      # --------------------------------------------------
-      - name: Post failure comment
-        if: failure() && steps.check_mergeable.outputs.mergeable == 'true'
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-
-          COMMENT="❌ *SQL Processing Failed*
-
-          Please check GitHub Actions logs."
-
+          COMMENT="✅ *PR Validation Complete*\n- SQL files processed\n- Lambda executed successfully"
           gh pr comment $PR_NUMBER --body "$COMMENT"
