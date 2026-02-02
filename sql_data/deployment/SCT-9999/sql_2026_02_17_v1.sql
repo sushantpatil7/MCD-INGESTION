@@ -1,1 +1,1 @@
-SELECT 1; 
+CREATE TABLE test_success(id INT); 
