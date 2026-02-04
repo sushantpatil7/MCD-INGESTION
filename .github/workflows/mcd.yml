@@ -1,45 +1,28 @@
-name: PR SQL Processing Automation
+name: SQL Deployment Automation
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-    branches:
-      - master
+    types: [closed]
 
 env:
-  AWS_REGION: eu-north-1
-  LAMBDA_FUNCTION_NAME: new-lambda
+  AWS_REGION: us-east-1
+  LAMBDA_FUNCTION_NAME: mcd-sql-deploy
 
 jobs:
-  check-merge-and-sql:
+  sql-deploy:
+    if: ${{ github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
       pull-requests: write
 
     steps:
-      # --------------------------------------------------
-      # 1. Checkout code
-      # --------------------------------------------------
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # --------------------------------------------------
-      # 2. Install GitHub CLI
-      # --------------------------------------------------
-      - name: Install GitHub CLI
-        run: |
-          sudo apt update
-          sudo apt install -y gh
-          gh --version
-
-      # --------------------------------------------------
-      # 3. Find new SQL files (FIXED)
-      # --------------------------------------------------
-      - name: Find new SQL files
+      - name: Find changed SQL files
         id: find_sql
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,10 +31,10 @@ jobs:
           REPO_OWNER=${{ github.repository_owner }}
           REPO_NAME=${{ github.event.repository.name }}
 
-          gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
+          gh api --paginate repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
             --jq '.[]
-                  | select(.status == "added")
-                  | select(.filename | startswith("sql_data/"))
+                  | select(.status != "removed")
+                  | select(.filename | startswith("sql/deployment/"))
                   | select(.filename | endswith(".sql"))
                   | .filename' > sql_files.txt
 
@@ -65,13 +48,15 @@ jobs:
             echo "No SQL files found"
           fi
 
-      # --------------------------------------------------
-      # 4. Create Lambda payload JSON
-      # --------------------------------------------------
       - name: Create Lambda payload
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
-          echo '{ "files": [' > sql_content.json
+          echo '{' > sql_content.json
+          echo '  "deployment_id": "${{ github.event.pull_request.merge_commit_sha }}",' >> sql_content.json
+          echo '  "pr_number": "${{ github.event.pull_request.number }}",' >> sql_content.json
+          echo '  "repo": "${{ github.repository }}",' >> sql_content.json
+          echo '  "branch": "${{ github.head_ref }}",' >> sql_content.json
+          echo '  "files": [' >> sql_content.json
           FIRST=true
 
           while IFS= read -r file; do
@@ -79,26 +64,20 @@ jobs:
             [ "$FIRST" = false ] && echo ',' >> sql_content.json
             FIRST=false
             CONTENT=$(jq -Rs . < "$file")
-            echo "  {\"filename\": \"$file\", \"content\": $CONTENT}" >> sql_content.json
+            echo "    {\"filename\": \"$file\", \"content\": $CONTENT}" >> sql_content.json
           done < sql_files.txt
 
-          echo ']}' >> sql_content.json
+          echo '  ]' >> sql_content.json
+          echo '}' >> sql_content.json
           cat sql_content.json
 
-      # --------------------------------------------------
-      # 5. Configure AWS credentials
-      # --------------------------------------------------
       - name: Configure AWS credentials
         if: steps.find_sql.outputs.sql_file_count > 0
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # --------------------------------------------------
-      # 6. Invoke Lambda
-      # --------------------------------------------------
       - name: Invoke Lambda
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
@@ -115,31 +94,30 @@ jobs:
           if grep -q "FunctionError" lambda_response.json; then
             echo "❌ Lambda execution failed"
             exit 1
-          else
-            echo "✅ Lambda executed successfully"
           fi
 
-      # --------------------------------------------------
-      # 7. PR success comment
-      # --------------------------------------------------
-      - name: PR success comment
-        if: success() && steps.find_sql.outputs.sql_file_count > 0
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "✅ *PR Validation Complete*
-          - SQL files processed
-          - Lambda executed successfully"
+          if jq -e '.status == "FAILED"' lambda_response.json >/dev/null; then
+            echo "❌ One or more SQL deployments failed"
+            exit 1
+          fi
 
-      # --------------------------------------------------
-      # 8. PR failure comment
-      # --------------------------------------------------
-      - name: PR failure comment
-        if: failure() && steps.find_sql.outputs.sql_file_count > 0
+          if jq -e '.results[] | select(.status == "FAILED")' lambda_response.json >/dev/null; then
+            echo "❌ One or more SQL deployments failed"
+            exit 1
+          fi
+
+          echo "✅ SQL deployments completed"
+
+      - name: PR comment
+        if: always() && steps.find_sql.outputs.sql_file_count > 0
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "❌ *SQL Processing Failed*
-          Please check GitHub Actions logs."
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" = "success" ]; then
+            BODY="✅ *SQL Deployment Complete*\n- Files processed: ${{ steps.find_sql.outputs.sql_file_count }}"
+          else
+            BODY="❌ *SQL Deployment Failed*\nCheck workflow logs for details."
+          fi
+
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
