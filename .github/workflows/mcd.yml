@@ -2,7 +2,7 @@ name: SQL Deployment Automation
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [closed]
 
 env:
   AWS_REGION: us-east-1
@@ -10,6 +10,7 @@ env:
 
 jobs:
   sql-deploy:
+    if: ${{ github.event.pull_request.merged == true }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,7 +34,7 @@ jobs:
           gh api --paginate repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
             --jq '.[]
                   | select(.status != "removed")
-                  | select(.filename | startswith("deployment/"))
+                  | select(.filename | startswith("sql/deployment/"))
                   | select(.filename | endswith(".sql"))
                   | .filename' > sql_files.txt
 
@@ -51,6 +52,7 @@ jobs:
         if: steps.find_sql.outputs.sql_file_count > 0
         run: |
           echo '{' > sql_content.json
+          echo '  "deployment_id": "${{ github.event.pull_request.merge_commit_sha }}",' >> sql_content.json
           echo '  "pr_number": "${{ github.event.pull_request.number }}",' >> sql_content.json
           echo '  "repo": "${{ github.repository }}",' >> sql_content.json
           echo '  "branch": "${{ github.head_ref }}",' >> sql_content.json
