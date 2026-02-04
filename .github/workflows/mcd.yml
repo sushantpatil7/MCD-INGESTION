@@ -34,7 +34,7 @@ jobs:
           gh api --paginate repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/files \
             --jq '.[]
                   | select(.status != "removed")
-                  | select(.filename | startswith("sql/deployment/"))
+                  | select(.filename | startswith("sql_data/deployment/"))
                   | select(.filename | endswith(".sql"))
                   | .filename' > sql_files.txt
 
