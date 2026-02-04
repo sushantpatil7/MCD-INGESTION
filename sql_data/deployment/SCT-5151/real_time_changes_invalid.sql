@@ -1,2 +1,10 @@
 -- test IGNORED (invalid filename)
 ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+-- updated for PR diff
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
+ALTER TABLE test_5151_success ADD COLUMN name VARCHAR(255);
