@@ -5,8 +5,8 @@ on:
     types: [closed]
 
 env:
-  AWS_REGION: us-east-1
-  LAMBDA_FUNCTION_NAME: mcd-sql-deploy
+  AWS_REGION: eu-north-1
+  LAMBDA_FUNCTION_NAME: new-lambda
 
 jobs:
   sql-deploy:
