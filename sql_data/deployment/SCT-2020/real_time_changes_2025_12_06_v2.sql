@@ -1,0 +1,2 @@
+-- test SUCCESS
+ALTER TABLE test_2020_success_1 ADD COLUMN name VARCHAR(255);
